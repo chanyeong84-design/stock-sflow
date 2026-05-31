@@ -15,6 +15,9 @@ SRC = PROJECT_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+import requests
+import pickle as _pickle
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -24,6 +27,29 @@ from plotly.subplots import make_subplots
 from stock_sflow.app.config_store import ConfigStore
 from stock_sflow.app.analysis_service import AnalysisService
 from stock_sflow.core.sd_table import process_data as sd_process_data
+
+# GitHub 데이터 저장소 설정
+DATA_REPO = "chanyeong84-design/stock-sflow-data"
+DATA_BRANCH = "main"
+
+def _gh_token():
+    try:
+        return st.secrets["GITHUB_TOKEN"]
+    except Exception:
+        return ""
+
+def _gh_headers():
+    token = _gh_token()
+    return {"Authorization": f"token {token}"} if token else {}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def download_pkl_from_github(filename: str):
+    """GitHub 데이터 저장소에서 pkl 파일 다운로드."""
+    url = f"https://raw.githubusercontent.com/{DATA_REPO}/{DATA_BRANCH}/cache/{filename}"
+    r = requests.get(url, headers=_gh_headers(), timeout=30)
+    if r.status_code == 200:
+        return _pickle.loads(r.content)
+    return None
 
 # =============================================================================
 # 색상 / 상수
@@ -122,9 +148,35 @@ def get_stock_name(code: str) -> str:
 
 
 # =============================================================================
-# 캐시 파일 목록 (키움으로 미리 조회한 경우 선택 가능)
+# 캐시 파일 목록
 # =============================================================================
+@st.cache_data(ttl=300, show_spinner=False)
 def list_cache_files():
+    """GitHub 데이터 저장소에서 캐시 파일 목록 조회. 토큰 없으면 로컬 파일 사용."""
+    token = _gh_token()
+
+    if token:
+        # 클라우드: GitHub에서 목록 조회
+        url = f"https://api.github.com/repos/{DATA_REPO}/contents/cache"
+        try:
+            r = requests.get(url, headers=_gh_headers(), timeout=10)
+            if r.status_code == 200:
+                options = {}
+                for f in r.json():
+                    name = f.get("name", "")
+                    if not name.endswith(".pkl") or "_avg_price" in name:
+                        continue
+                    m = re.match(r"^([A-Za-z0-9]+)_(\d{8})\.pkl$", name)
+                    if m:
+                        code, d = m.groups()
+                        label = f"[캐시] {code}  ({d[:4]}-{d[4:6]}-{d[6:]})"
+                        options[label] = ("github", name)
+                return options
+        except Exception:
+            pass
+        return {}
+
+    # 로컬: run_web.bat으로 실행 시 로컬 파일 사용
     options = {}
     cache_dir = cfg.cache_dir
     if not cache_dir.exists():
@@ -136,7 +188,7 @@ def list_cache_files():
         if m:
             code, d = m.groups()
             label = f"[캐시] {code}  ({d[:4]}-{d[4:6]}-{d[6:]})"
-            options[label] = f
+            options[label] = ("local", f)
     return options
 
 
@@ -202,28 +254,36 @@ with tab_cache:
         if cache_btn:
             with st.spinner("캐시 로드 및 분석 중..."):
                 try:
-                    selected_path = cache_options[selected_label]
-                    result_df = pd.read_pickle(selected_path)
+                    source, path_or_name = cache_options[selected_label]
 
-                    avg_path = Path(str(selected_path).replace(".pkl", "_avg_price.pkl"))
-                    avg_df_full = pd.read_pickle(avg_path) if avg_path.exists() else None
+                    if source == "github":
+                        result_df   = download_pkl_from_github(path_or_name)
+                        avg_name    = path_or_name.replace(".pkl", "_avg_price.pkl")
+                        avg_df_full = download_pkl_from_github(avg_name)
+                    else:  # local
+                        result_df   = pd.read_pickle(path_or_name)
+                        avg_path    = Path(str(path_or_name).replace(".pkl", "_avg_price.pkl"))
+                        avg_df_full = pd.read_pickle(avg_path) if avg_path.exists() else None
 
-                    res = analysis_service.run(
-                        result_df,
-                        cache_start.strftime("%Y%m%d"),
-                        cache_end.strftime("%Y%m%d"),
-                    )
-                    if avg_df_full is not None and not avg_df_full.empty:
-                        s, e = res.sliced.index.min(), res.sliced.index.max()
-                        avg_df = avg_df_full.loc[(avg_df_full.index >= s) & (avg_df_full.index <= e)]
+                    if result_df is None:
+                        st.error("데이터를 불러올 수 없습니다. sync_cache.bat을 실행했는지 확인하세요.")
                     else:
-                        avg_df = None
+                        res = analysis_service.run(
+                            result_df,
+                            cache_start.strftime("%Y%m%d"),
+                            cache_end.strftime("%Y%m%d"),
+                        )
+                        if avg_df_full is not None and not avg_df_full.empty:
+                            s, e = res.sliced.index.min(), res.sliced.index.max()
+                            avg_df = avg_df_full.loc[(avg_df_full.index >= s) & (avg_df_full.index <= e)]
+                        else:
+                            avg_df = None
 
-                    st.session_state.res         = res
-                    st.session_state.avg_df      = avg_df
-                    m = re.match(r"\[캐시\] ([A-Za-z0-9]+)", selected_label)
-                    st.session_state.stock_name  = m.group(1) if m else selected_label
-                    st.session_state.queried_code = st.session_state.stock_name
+                        st.session_state.res          = res
+                        st.session_state.avg_df       = avg_df
+                        m = re.match(r"\[캐시\] ([A-Za-z0-9]+)", selected_label)
+                        st.session_state.stock_name   = m.group(1) if m else selected_label
+                        st.session_state.queried_code = st.session_state.stock_name
                 except Exception as e:
                     st.error(f"오류: {e}")
 
