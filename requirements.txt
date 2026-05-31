@@ -1,0 +1,5 @@
+﻿streamlit>=1.28.0
+plotly>=5.18.0
+pandas>=1.5.0
+numpy>=1.23.0
+pykrx>=1.0.45

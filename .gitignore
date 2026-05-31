@@ -1,0 +1,20 @@
+﻿# 캐시 데이터 (키움 데이터 - 업로드 제외)
+cache/
+*.pkl
+
+# 실행파일
+ngrok.exe
+*.exe
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 설정
+config.json
+.env
+
+# 로컬 전용
+run_web.bat
