@@ -43,10 +43,11 @@ def _gh_headers():
     return {"Authorization": f"token {token}"} if token else {}
 
 @st.cache_data(ttl=300, show_spinner=False)
-def download_pkl_from_github(filename: str):
+def download_pkl_from_github(filename: str, token: str = ""):
     """GitHub 데이터 저장소에서 pkl 파일 다운로드."""
+    headers = {"Authorization": f"token {token}"} if token else {}
     url = f"https://raw.githubusercontent.com/{DATA_REPO}/{DATA_BRANCH}/cache/{filename}"
-    r = requests.get(url, headers=_gh_headers(), timeout=30)
+    r = requests.get(url, headers=headers, timeout=30)
     if r.status_code == 200:
         return _pickle.loads(r.content)
     return None
@@ -151,15 +152,12 @@ def get_stock_name(code: str) -> str:
 # 캐시 파일 목록
 # =============================================================================
 @st.cache_data(ttl=300, show_spinner=False)
-def list_cache_files():
-    """GitHub 데이터 저장소에서 캐시 파일 목록 조회. 토큰 없으면 로컬 파일 사용."""
-    token = _gh_token()
-
+def list_cache_files(token: str = ""):
+    """토큰 있으면 GitHub에서, 없으면 로컬에서 캐시 파일 목록 조회."""
     if token:
-        # 클라우드: GitHub에서 목록 조회
         url = f"https://api.github.com/repos/{DATA_REPO}/contents/cache"
         try:
-            r = requests.get(url, headers=_gh_headers(), timeout=10)
+            r = requests.get(url, headers={"Authorization": f"token {token}"}, timeout=10)
             if r.status_code == 200:
                 options = {}
                 for f in r.json():
@@ -176,7 +174,7 @@ def list_cache_files():
             pass
         return {}
 
-    # 로컬: run_web.bat으로 실행 시 로컬 파일 사용
+    # 로컬 실행(run_web.bat) 시 로컬 파일 사용
     options = {}
     cache_dir = cfg.cache_dir
     if not cache_dir.exists():
@@ -242,7 +240,7 @@ with tab_direct:
 
 # ── 캐시 탭 (키움 앱으로 미리 받은 데이터) ──────────────────────────────
 with tab_cache:
-    cache_options = list_cache_files()
+    cache_options = list_cache_files(token=_gh_token())
     if not cache_options:
         st.info("캐시 없음\n\n32비트 `run.py`로\n데이터 조회 후 새로고침")
     else:
@@ -256,10 +254,11 @@ with tab_cache:
                 try:
                     source, path_or_name = cache_options[selected_label]
 
+                    token = _gh_token()
                     if source == "github":
-                        result_df   = download_pkl_from_github(path_or_name)
+                        result_df   = download_pkl_from_github(path_or_name, token=token)
                         avg_name    = path_or_name.replace(".pkl", "_avg_price.pkl")
-                        avg_df_full = download_pkl_from_github(avg_name)
+                        avg_df_full = download_pkl_from_github(avg_name, token=token)
                     else:  # local
                         result_df   = pd.read_pickle(path_or_name)
                         avg_path    = Path(str(path_or_name).replace(".pkl", "_avg_price.pkl"))
